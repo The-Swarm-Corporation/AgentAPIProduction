@@ -58,12 +58,8 @@ class ProcessMetrics:
 class ProcessManager:
     """Manages multiple API processes and their metrics."""
 
-    def __init__(
-        self, num_processes: int = None, start_port: int = 8000
-    ):
-        self.num_processes = (
-            num_processes or multiprocessing.cpu_count()
-        )
+    def __init__(self, num_processes: int = None, start_port: int = 8000):
+        self.num_processes = num_processes or multiprocessing.cpu_count()
         self.start_port = start_port
         self.processes: Dict[int, Process] = {}
         self.metrics: Dict[int, ProcessMetrics] = {}
@@ -101,17 +97,13 @@ class ProcessManager:
             try:
                 # Update metrics from heartbeat queue
                 while not self.heartbeat_queue.empty():
-                    pid, cpu, memory, requests = (
-                        self.heartbeat_queue.get_nowait()
-                    )
+                    pid, cpu, memory, requests = self.heartbeat_queue.get_nowait()
                     with self.metrics_lock:
                         if pid in self.metrics:
                             self.metrics[pid].cpu_usage = cpu
                             self.metrics[pid].memory_usage = memory
                             self.metrics[pid].request_count = requests
-                            self.metrics[pid].last_heartbeat = (
-                                time.time()
-                            )
+                            self.metrics[pid].last_heartbeat = time.time()
 
                 # Check for dead processes and restart them
                 current_time = time.time()
@@ -120,27 +112,19 @@ class ProcessManager:
                         if (
                             current_time - metrics.last_heartbeat > 30
                         ):  # 30 seconds timeout
-                            print(
-                                f"Process {pid} appears to be dead, restarting..."
-                            )
+                            print(f"Process {pid} appears to be dead, restarting...")
                             if pid in self.processes:
                                 self.processes[pid].terminate()
                                 del self.processes[pid]
-                            new_process = self.start_api_process(
-                                metrics.port
-                            )
-                            self.processes[new_process.pid] = (
-                                new_process
-                            )
-                            self.metrics[new_process.pid] = (
-                                ProcessMetrics(
-                                    pid=new_process.pid,
-                                    cpu_usage=0.0,
-                                    memory_usage=0.0,
-                                    request_count=0,
-                                    last_heartbeat=time.time(),
-                                    port=metrics.port,
-                                )
+                            new_process = self.start_api_process(metrics.port)
+                            self.processes[new_process.pid] = new_process
+                            self.metrics[new_process.pid] = ProcessMetrics(
+                                pid=new_process.pid,
+                                cpu_usage=0.0,
+                                memory_usage=0.0,
+                                request_count=0,
+                                last_heartbeat=time.time(),
+                                port=metrics.port,
                             )
                             del self.metrics[pid]
 
@@ -200,48 +184,28 @@ class AgentConfig(BaseModel):
     description: str = Field(
         default="", description="Description of the agent's purpose"
     )
-    system_prompt: str = Field(
-        ..., description="System prompt for the agent"
-    )
-    model_name: str = Field(
-        default="gpt-4", description="Model name to use"
-    )
+    system_prompt: str = Field(..., description="System prompt for the agent")
+    model_name: str = Field(default="gpt-4", description="Model name to use")
     temperature: float = Field(
         default=0.1,
         ge=0.0,
         le=2.0,
         description="Temperature for the model",
     )
-    max_loops: int = Field(
-        default=1, ge=1, description="Maximum number of loops"
-    )
-    autosave: bool = Field(
-        default=True, description="Enable autosave"
-    )
-    dashboard: bool = Field(
-        default=False, description="Enable dashboard"
-    )
-    verbose: bool = Field(
-        default=True, description="Enable verbose output"
-    )
+    max_loops: int = Field(default=1, ge=1, description="Maximum number of loops")
+    autosave: bool = Field(default=True, description="Enable autosave")
+    dashboard: bool = Field(default=False, description="Enable dashboard")
+    verbose: bool = Field(default=True, description="Enable verbose output")
     dynamic_temperature_enabled: bool = Field(
         default=True, description="Enable dynamic temperature"
     )
-    user_name: str = Field(
-        default="default_user", description="Username for the agent"
-    )
-    retry_attempts: int = Field(
-        default=1, ge=1, description="Number of retry attempts"
-    )
-    context_length: int = Field(
-        default=200000, ge=1000, description="Context length"
-    )
+    user_name: str = Field(default="default_user", description="Username for the agent")
+    retry_attempts: int = Field(default=1, ge=1, description="Number of retry attempts")
+    context_length: int = Field(default=200000, ge=1000, description="Context length")
     output_type: str = Field(
         default="string", description="Output type (string or json)"
     )
-    streaming_on: bool = Field(
-        default=False, description="Enable streaming"
-    )
+    streaming_on: bool = Field(default=False, description="Enable streaming")
     tags: List[str] = Field(
         default_factory=list,
         description="Tags for categorizing the agent",
@@ -290,13 +254,9 @@ class CompletionRequest(BaseModel):
 
     prompt: str = Field(..., description="The prompt to process")
     agent_id: UUID = Field(..., description="ID of the agent to use")
-    max_tokens: Optional[int] = Field(
-        None, description="Maximum tokens to generate"
-    )
+    max_tokens: Optional[int] = Field(None, description="Maximum tokens to generate")
     temperature_override: Optional[float] = 0.5
-    stream: bool = Field(
-        default=False, description="Enable streaming response"
-    )
+    stream: bool = Field(default=False, description="Enable streaming response")
 
 
 class CompletionResponse(BaseModel):
@@ -318,13 +278,9 @@ class AgentStore:
         self.agent_metadata: Dict[UUID, Dict[str, Any]] = {}
         self.users: Dict[UUID, User] = {}  # user_id -> User
         self.api_keys: Dict[str, UUID] = {}  # api_key -> user_id
-        self.user_agents: Dict[UUID, List[UUID]] = (
-            {}
-        )  # user_id -> [agent_ids]
+        self.user_agents: Dict[UUID, List[UUID]] = {}  # user_id -> [agent_ids]
         self.executor = ThreadPoolExecutor(max_workers=4)
-        self.total_requests = Value(
-            "i", 0
-        )  # Shared counter for total requests
+        self.total_requests = Value("i", 0)  # Shared counter for total requests
         self._ensure_directories()
 
     def increment_request_count(self):
@@ -366,9 +322,7 @@ class AgentStore:
 
         return key_object
 
-    async def verify_agent_access(
-        self, agent_id: UUID, user_id: UUID
-    ) -> bool:
+    async def verify_agent_access(self, agent_id: UUID, user_id: UUID) -> bool:
         """Verify if a user has access to an agent."""
         if agent_id not in self.agents:
             return False
@@ -391,9 +345,7 @@ class AgentStore:
         key_object.last_used = datetime.utcnow()
         return user_id
 
-    async def create_agent(
-        self, config: AgentConfig, user_id: UUID
-    ) -> UUID:
+    async def create_agent(self, config: AgentConfig, user_id: UUID) -> UUID:
         """Create a new agent with the given configuration."""
         try:
 
@@ -457,9 +409,7 @@ class AgentStore:
             )
         return agent
 
-    async def update_agent(
-        self, agent_id: UUID, update: AgentUpdate
-    ) -> None:
+    async def update_agent(self, agent_id: UUID, update: AgentUpdate) -> None:
         """Update agent configuration."""
         agent = await self.get_agent(agent_id)
         metadata = self.agent_metadata[agent_id]
@@ -475,9 +425,7 @@ class AgentStore:
         if update.status is not None:
             metadata["status"] = update.status
             if update.status == AgentStatus.MAINTENANCE:
-                metadata["downtime"] += (
-                    datetime.utcnow() - metadata["last_used"]
-                )
+                metadata["downtime"] += datetime.utcnow() - metadata["last_used"]
 
         logger.info(f"Updated agent {agent_id}")
 
@@ -492,9 +440,7 @@ class AgentStore:
             metadata = self.agent_metadata[agent_id]
 
             # Apply filters
-            if tags and not any(
-                tag in metadata["tags"] for tag in tags
-            ):
+            if tags and not any(tag in metadata["tags"] for tag in tags):
                 continue
             if status and metadata["status"] != status:
                 continue
@@ -521,14 +467,10 @@ class AgentStore:
         # Calculate metrics
         total_time = datetime.utcnow() - metadata["start_time"]
         uptime = total_time - metadata["downtime"]
-        uptime_percentage = (
-            uptime.total_seconds() / total_time.total_seconds()
-        ) * 100
+        uptime_percentage = (uptime.total_seconds() / total_time.total_seconds()) * 100
 
         success_rate = (
-            metadata["successful_completions"]
-            / metadata["total_completions"]
-            * 100
+            metadata["successful_completions"] / metadata["total_completions"] * 100
             if metadata["total_completions"] > 0
             else 0
         )
@@ -536,32 +478,23 @@ class AgentStore:
         return AgentMetrics(
             total_completions=metadata["total_completions"],
             average_response_time=(
-                sum(response_times) / len(response_times)
-                if response_times
-                else 0
+                sum(response_times) / len(response_times) if response_times else 0
             ),
             error_rate=(
-                metadata["error_count"]
-                / metadata["total_completions"]
+                metadata["error_count"] / metadata["total_completions"]
                 if metadata["total_completions"] > 0
                 else 0
             ),
             last_24h_completions=sum(
-                1
-                for t in response_times
-                if (datetime.utcnow() - t).days < 1
+                1 for t in response_times if (datetime.utcnow() - t).days < 1
             ),
             total_tokens_used=metadata["total_tokens"],
             uptime_percentage=uptime_percentage,
             success_rate=success_rate,
-            peak_tokens_per_minute=max(
-                metadata.get("tokens_per_minute", [0])
-            ),
+            peak_tokens_per_minute=max(metadata.get("tokens_per_minute", [0])),
         )
 
-    async def clone_agent(
-        self, agent_id: UUID, new_name: str
-    ) -> UUID:
+    async def clone_agent(self, agent_id: UUID, new_name: str) -> UUID:
         """Clone an existing agent with a new name."""
         original_agent = await self.get_agent(agent_id)
         original_metadata = self.agent_metadata[agent_id]
@@ -616,9 +549,7 @@ class AgentStore:
             response = agent.run(prompt)
 
             # Update metrics
-            processing_time = (
-                datetime.utcnow() - start_time
-            ).total_seconds()
+            processing_time = (datetime.utcnow() - start_time).total_seconds()
             metadata["response_times"].append(processing_time)
             metadata["total_completions"] += 1
             metadata["successful_completions"] += 1
@@ -630,14 +561,11 @@ class AgentStore:
             metadata["total_tokens"] += total_tokens
 
             # Update tokens per minute tracking
-            current_minute = datetime.utcnow().replace(
-                second=0, microsecond=0
-            )
+            current_minute = datetime.utcnow().replace(second=0, microsecond=0)
             if "tokens_per_minute" not in metadata:
                 metadata["tokens_per_minute"] = {}
             metadata["tokens_per_minute"][current_minute] = (
-                metadata["tokens_per_minute"].get(current_minute, 0)
-                + total_tokens
+                metadata["tokens_per_minute"].get(current_minute, 0) + total_tokens
             )
 
             return CompletionResponse(
@@ -689,9 +617,7 @@ def get_store() -> AgentStore:
 
 # Security utility function using the new dependency
 async def get_current_user(
-    api_key: str = Header(
-        ..., description="API key for authentication"
-    ),
+    api_key: str = Header(..., description="API key for authentication"),
     store: AgentStore = Depends(get_store),
 ) -> User:
     """Validate API key and return current user."""
@@ -722,9 +648,7 @@ class SwarmsAPI:
         # Configure CORS
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=[
-                "*"
-            ],  # Configure appropriately for production
+            allow_origins=["*"],  # Configure appropriately for production
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -743,16 +667,12 @@ class SwarmsAPI:
                 body = await request.json()
                 username = body.get("username")
                 if not username or len(username) < 3:
-                    raise HTTPException(
-                        status_code=400, detail="Invalid username"
-                    )
+                    raise HTTPException(status_code=400, detail="Invalid username")
 
                 user_id = uuid4()
                 user = User(id=user_id, username=username)
                 self.store.users[user_id] = user
-                initial_key = self.store.create_api_key(
-                    user_id, "Initial Key"
-                )
+                initial_key = self.store.create_api_key(user_id, "Initial Key")
                 return {
                     "user_id": user_id,
                     "api_key": initial_key.key,
@@ -761,19 +681,14 @@ class SwarmsAPI:
                 logger.error(f"Error creating user: {str(e)}")
                 raise HTTPException(status_code=400, detail=str(e))
 
-        @self.app.post(
-            "/v1/users/{user_id}/api-keys", response_model=APIKey
-        )
+        @self.app.post("/v1/users/{user_id}/api-keys", response_model=APIKey)
         async def create_api_key(
             user_id: UUID,
             key_create: APIKeyCreate,
             current_user: User = Depends(get_current_user),
         ):
             """Create a new API key for a user."""
-            if (
-                current_user.id != user_id
-                and not current_user.is_admin
-            ):
+            if current_user.id != user_id and not current_user.is_admin:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Not authorized to create API keys for this user",
@@ -790,10 +705,7 @@ class SwarmsAPI:
             current_user: User = Depends(get_current_user),
         ):
             """List all API keys for a user."""
-            if (
-                current_user.id != user_id
-                and not current_user.is_admin
-            ):
+            if current_user.id != user_id and not current_user.is_admin:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Not authorized to view API keys for this user",
@@ -808,19 +720,14 @@ class SwarmsAPI:
             current_user: User = Depends(get_current_user),
         ):
             """Revoke an API key."""
-            if (
-                current_user.id != user_id
-                and not current_user.is_admin
-            ):
+            if current_user.id != user_id and not current_user.is_admin:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Not authorized to revoke API keys for this user",
                 )
 
             if key in self.store.users[user_id].api_keys:
-                self.store.users[user_id].api_keys[
-                    key
-                ].is_active = False
+                self.store.users[user_id].api_keys[key].is_active = False
                 del self.store.api_keys[key]
                 return {"status": "API key revoked"}
 
@@ -829,23 +736,17 @@ class SwarmsAPI:
                 detail="API key not found",
             )
 
-        @self.app.get(
-            "/v1/users/me/agents", response_model=List[AgentSummary]
-        )
+        @self.app.get("/v1/users/me/agents", response_model=List[AgentSummary])
         async def list_user_agents(
             current_user: User = Depends(get_current_user),
             tags: Optional[List[str]] = Query(None),
             status: Optional[AgentStatus] = None,
         ):
             """List all agents owned by the current user."""
-            user_agents = self.store.user_agents.get(
-                current_user.id, []
-            )
+            user_agents = self.store.user_agents.get(current_user.id, [])
             return [
                 agent
-                for agent in await self.store.list_agents(
-                    tags, status
-                )
+                for agent in await self.store.list_agents(tags, status)
                 if agent.agent_id in user_agents
             ]
 
@@ -863,9 +764,7 @@ class SwarmsAPI:
             current_user: User = Depends(get_current_user),
         ):
             """Create a new agent with the specified configuration."""
-            agent_id = await self.store.create_agent(
-                config, current_user.id
-            )
+            agent_id = await self.store.create_agent(config, current_user.id)
             return {"agent_id": agent_id}
 
         @self.app.get("/v1/agents", response_model=List[AgentSummary])
@@ -876,9 +775,7 @@ class SwarmsAPI:
             """List all agents, optionally filtered by tags and status."""
             return await self.store.list_agents(tags, status)
 
-        @self.app.patch(
-            "/v1/agent/{agent_id}", response_model=Dict[str, str]
-        )
+        @self.app.patch("/v1/agent/{agent_id}", response_model=Dict[str, str])
         async def update_agent(agent_id: UUID, update: AgentUpdate):
             """Update an existing agent's configuration."""
             await self.store.update_agent(agent_id, update)
@@ -907,9 +804,7 @@ class SwarmsAPI:
             await self.store.delete_agent(agent_id)
             return {"status": "deleted"}
 
-        @self.app.post(
-            "/v1/agent/completions", response_model=CompletionResponse
-        )
+        @self.app.post("/v1/agent/completions", response_model=CompletionResponse)
         async def create_completion(
             request: CompletionRequest,
             background_tasks: BackgroundTasks,
@@ -928,9 +823,7 @@ class SwarmsAPI:
                 )
 
                 # Schedule background cleanup
-                background_tasks.add_task(
-                    self._cleanup_old_metrics, request.agent_id
-                )
+                background_tasks.add_task(self._cleanup_old_metrics, request.agent_id)
 
                 return response
 
@@ -967,22 +860,17 @@ class SwarmsAPI:
             metadata["response_times"] = [
                 t
                 for t in metadata["response_times"]
-                if isinstance(t, (int, float))
-                and t > cutoff.timestamp()
+                if isinstance(t, (int, float)) and t > cutoff.timestamp()
             ]
 
             # Clean up old tokens per minute data
             if "tokens_per_minute" in metadata:
                 metadata["tokens_per_minute"] = {
-                    k: v
-                    for k, v in metadata["tokens_per_minute"].items()
-                    if k > cutoff
+                    k: v for k, v in metadata["tokens_per_minute"].items() if k > cutoff
                 }
 
 
-def run_api_instance(
-    port: int, heartbeat_queue: Queue, shutdown_event: any
-):
+def run_api_instance(port: int, heartbeat_queue: Queue, shutdown_event: any):
     """Run a single API instance and report metrics."""
     try:
         # Initialize API
@@ -1012,9 +900,7 @@ def run_api_instance(
         metrics_thread.start()
 
         # Run API
-        uvicorn.run(
-            api.app, host="0.0.0.0", port=port, log_level="info"
-        )
+        uvicorn.run(api.app, host="0.0.0.0", port=port, log_level="info")
 
     except Exception as e:
         logger.error(f"Error in API instance: {e}")
@@ -1024,13 +910,9 @@ def run_api_instance(
 class MultiProcessManager:
     """Manages multiple API processes."""
 
-    def __init__(
-        self, base_port: int = 8000, num_processes: int = None
-    ):
+    def __init__(self, base_port: int = 8000, num_processes: int = None):
         self.base_port = base_port
-        self.num_processes = (
-            num_processes or multiprocessing.cpu_count()
-        )
+        self.num_processes = num_processes or multiprocessing.cpu_count()
         self.processes: Dict[int, Process] = {}
         self.metrics: Dict[int, ProcessMetrics] = {}
         self.active = Value("b", True)
@@ -1055,9 +937,7 @@ class MultiProcessManager:
                     metrics.last_heartbeat = time.time()
                 except psutil.NoSuchProcess:
                     # Restart dead process
-                    logger.warning(
-                        f"Process {pid} died, restarting..."
-                    )
+                    logger.warning(f"Process {pid} died, restarting...")
                     if pid in self.processes:
                         self.processes[pid].terminate()
                         del self.processes[pid]
@@ -1075,9 +955,7 @@ class MultiProcessManager:
             self.start_process(port)
 
         # Start monitoring thread
-        monitor_thread = threading.Thread(
-            target=self.monitor_processes
-        )
+        monitor_thread = threading.Thread(target=self.monitor_processes)
         monitor_thread.daemon = True
         monitor_thread.start()
 
@@ -1118,9 +996,7 @@ class LoadBalancer:
             ]
 
             if not valid_instances:
-                raise RuntimeError(
-                    "No healthy API instances available"
-                )
+                raise RuntimeError("No healthy API instances available")
 
             # Calculate load score for each instance
             scores = []
@@ -1130,15 +1006,11 @@ class LoadBalancer:
                 request_score = (
                     metrics.request_count / 1000.0
                 )  # Normalize request count
-                total_score = (
-                    cpu_score + memory_score + request_score
-                ) / 3
+                total_score = (cpu_score + memory_score + request_score) / 3
                 scores.append((pid, metrics.port, total_score))
 
             # Select instance with lowest load score
-            selected_pid, selected_port, _ = min(
-                scores, key=lambda x: x[2]
-            )
+            selected_pid, selected_port, _ = min(scores, key=lambda x: x[2])
             return selected_pid, selected_port
 
 
@@ -1201,9 +1073,7 @@ def run_worker(port: int):
     """Run a single worker instance."""
     try:
         api = SwarmsAPI()
-        uvicorn.run(
-            api.app, host="0.0.0.0", port=port, log_level="info"
-        )
+        uvicorn.run(api.app, host="0.0.0.0", port=port, log_level="info")
         logger.info(f"Worker started on port {port}")
     except Exception as e:
         logger.error(f"Worker error: {e}")
@@ -1218,9 +1088,7 @@ def main():
         # Try to get current method, only set if not already set
         try:
             current_method = multiprocessing.get_start_method()
-            logger.info(
-                f"Using existing start method: {current_method}"
-            )
+            logger.info(f"Using existing start method: {current_method}")
         except RuntimeError:
             try:
                 multiprocessing.set_start_method("fork")
@@ -1258,9 +1126,7 @@ def main():
         signal.signal(signal.SIGTERM, shutdown_handler)
 
         # Run main instance
-        uvicorn.run(
-            api.app, host="0.0.0.0", port=base_port, log_level="info"
-        )
+        uvicorn.run(api.app, host="0.0.0.0", port=base_port, log_level="info")
         logger.info(f"Main instance started on port {base_port}")
 
     except Exception as e:
@@ -1270,9 +1136,7 @@ def main():
             try:
                 p.terminate()
                 p.join(timeout=5)
-                logger.info(
-                    f"Worker {p.pid} terminated during cleanup"
-                )
+                logger.info(f"Worker {p.pid} terminated during cleanup")
             except Exception as cleanup_error:
                 logger.error(f"Error during cleanup: {cleanup_error}")
         sys.exit(1)

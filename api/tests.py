@@ -17,14 +17,10 @@ logger.add(
     level="DEBUG",
 )
 
-BASE_URL = (
-    "https://api.swarms.ai/v1"  # Change this to match your server URL
-)
+BASE_URL = "https://api.swarms.ai/v1"  # Change this to match your server URL
 
 
-async def log_request_details(
-    method: str, url: str, headers: dict, data: Any = None
-):
+async def log_request_details(method: str, url: str, headers: dict, data: Any = None):
     """Log request details before sending."""
     logger.debug(f"\n{'='*50}")
     logger.debug(f"REQUEST: {method} {url}")
@@ -33,14 +29,10 @@ async def log_request_details(
         logger.debug(f"PAYLOAD: {json.dumps(data, indent=2)}")
 
 
-async def log_response_details(
-    response: aiohttp.ClientResponse, data: Any = None
-):
+async def log_response_details(response: aiohttp.ClientResponse, data: Any = None):
     """Log response details after receiving."""
     logger.debug(f"\nRESPONSE Status: {response.status}")
-    logger.debug(
-        f"RESPONSE Headers: {json.dumps(dict(response.headers), indent=2)}"
-    )
+    logger.debug(f"RESPONSE Headers: {json.dumps(dict(response.headers), indent=2)}")
     if data:
         logger.debug(f"RESPONSE Body: {json.dumps(data, indent=2)}")
     logger.debug(f"{'='*50}\n")
@@ -77,9 +69,7 @@ async def test_create_user(
         sys.exit(1)
 
 
-async def test_create_agent(
-    session: aiohttp.ClientSession, api_key: str
-) -> str:
+async def test_create_agent(session: aiohttp.ClientSession, api_key: str) -> str:
     """Test agent creation endpoint."""
     url = f"{BASE_URL}/agent"
     config = {
@@ -100,9 +90,7 @@ async def test_create_agent(
     await log_request_details("POST", url, headers, config)
 
     try:
-        async with session.post(
-            url, headers=headers, json=config
-        ) as response:
+        async with session.post(url, headers=headers, json=config) as response:
             data = await response.json()
             await log_response_details(response, data)
 
@@ -136,9 +124,7 @@ async def test_agent_update(
     await log_request_details("PATCH", url, headers, update_data)
 
     try:
-        async with session.patch(
-            url, headers=headers, json=update_data
-        ) as response:
+        async with session.patch(url, headers=headers, json=update_data) as response:
             data = await response.json()
             await log_response_details(response, data)
 
@@ -155,9 +141,7 @@ async def test_agent_update(
         return False
 
 
-async def test_completion(
-    session: aiohttp.ClientSession, agent_id: str, api_key: str
-):
+async def test_completion(session: aiohttp.ClientSession, agent_id: str, api_key: str):
     """Test completion endpoint."""
     url = f"{BASE_URL}/agent/completions"
     completion_request = {
@@ -169,9 +153,7 @@ async def test_completion(
 
     headers = {"api-key": api_key}
     logger.info(f"Testing completion for agent {agent_id}...")
-    await log_request_details(
-        "POST", url, headers, completion_request
-    )
+    await log_request_details("POST", url, headers, completion_request)
 
     try:
         async with session.post(
@@ -189,15 +171,11 @@ async def test_completion(
             logger.success("✓ Processed completion successfully")
             return True
     except Exception as e:
-        logger.exception(
-            f"Exception in completion processing: {str(e)}"
-        )
+        logger.exception(f"Exception in completion processing: {str(e)}")
         return False
 
 
-async def test_get_metrics(
-    session: aiohttp.ClientSession, agent_id: str, api_key: str
-):
+async def test_get_metrics(session: aiohttp.ClientSession, agent_id: str, api_key: str):
     """Test metrics endpoint."""
     url = f"{BASE_URL}/agent/{agent_id}/metrics"
     headers = {"api-key": api_key}
@@ -237,9 +215,7 @@ async def run_tests():
                 logger.error("User creation failed, stopping tests.")
                 return
 
-            logger.info(
-                "User created successfully, proceeding with agent tests..."
-            )
+            logger.info("User created successfully, proceeding with agent tests...")
             user_data["user_id"]
             api_key = user_data["api_key"]
 
@@ -249,32 +225,24 @@ async def run_tests():
                 logger.error("Agent creation failed, stopping tests.")
                 return
 
-            logger.info(
-                "Agent created successfully, proceeding with other tests..."
-            )
+            logger.info("Agent created successfully, proceeding with other tests...")
 
             # Run remaining tests
             test_results = []
 
             # Test metrics retrieval
             logger.info("Testing metrics retrieval...")
-            metrics_result = await test_get_metrics(
-                session, agent_id, api_key
-            )
+            metrics_result = await test_get_metrics(session, agent_id, api_key)
             test_results.append(("Metrics", metrics_result))
 
             # Test agent update
             logger.info("Testing agent update...")
-            update_result = await test_agent_update(
-                session, agent_id, api_key
-            )
+            update_result = await test_agent_update(session, agent_id, api_key)
             test_results.append(("Agent Update", update_result))
 
             # Test completion
             logger.info("Testing completion...")
-            completion_result = await test_completion(
-                session, agent_id, api_key
-            )
+            completion_result = await test_completion(session, agent_id, api_key)
             test_results.append(("Completion", completion_result))
 
             # Log final results
@@ -287,22 +255,14 @@ async def run_tests():
                     all_passed = False
 
             if all_passed:
-                logger.success(
-                    "\n🎉 All tests completed successfully!"
-                )
+                logger.success("\n🎉 All tests completed successfully!")
             else:
-                logger.error(
-                    "\n❌ Some tests failed. Check the logs for details."
-                )
+                logger.error("\n❌ Some tests failed. Check the logs for details.")
 
-            logger.info(
-                f"\nDetailed logs available at: {os.path.abspath(LOG_PATH)}"
-            )
+            logger.info(f"\nDetailed logs available at: {os.path.abspath(LOG_PATH)}")
 
         except Exception as e:
-            logger.exception(
-                f"Unexpected error during test execution: {str(e)}"
-            )
+            logger.exception(f"Unexpected error during test execution: {str(e)}")
             raise
         finally:
             logger.info("Test suite execution completed.")

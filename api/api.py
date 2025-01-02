@@ -36,6 +36,7 @@ load_dotenv()
 
 class APIKey(BaseModel):
     """Model matching Supabase api_keys table"""
+
     id: UUID
     created_at: datetime
     name: str
@@ -44,11 +45,13 @@ class APIKey(BaseModel):
     limit_credit_dollar: Optional[float] = None
     is_deleted: bool = False
 
+
 class User(BaseModel):
     id: UUID
     name: str
     is_active: bool = True
     is_admin: bool = False
+
 
 @lru_cache()
 def get_supabase() -> Client:
@@ -59,11 +62,12 @@ def get_supabase() -> Client:
         raise ValueError("Supabase configuration is missing")
     return create_client(supabase_url, supabase_key)
 
+
 async def get_current_user(
     api_key: str = Header(..., description="API key for authentication"),
 ) -> User:
     """Validate API key against Supabase and return current user."""
-    if not api_key or not api_key.startswith('sk-'):
+    if not api_key or not api_key.startswith("sk-"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key format",
@@ -72,12 +76,16 @@ async def get_current_user(
 
     try:
         supabase = get_supabase()
-        
+
         # Query the api_keys table
-        response = supabase.table('api_keys').select(
-            'id, name, user_id, key, limit_credit_dollar, is_deleted'
-        ).eq('key', api_key).single().execute()
-        
+        response = (
+            supabase.table("api_keys")
+            .select("id, name, user_id, key, limit_credit_dollar, is_deleted")
+            .eq("key", api_key)
+            .single()
+            .execute()
+        )
+
         if not response.data:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -86,27 +94,30 @@ async def get_current_user(
             )
 
         key_data = response.data
-        
+
         # Check if key is deleted
-        if key_data['is_deleted']:
+        if key_data["is_deleted"]:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="API key has been deleted",
                 headers={"WWW-Authenticate": "ApiKey"},
             )
-            
+
         # Check credit limit if applicable
-        if key_data['limit_credit_dollar'] is not None and key_data['limit_credit_dollar'] <= 0:
+        if (
+            key_data["limit_credit_dollar"] is not None
+            and key_data["limit_credit_dollar"] <= 0
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="API key credit limit exceeded"
+                detail="API key credit limit exceeded",
             )
 
         # Create user object
         return User(
-            id=key_data['user_id'],
-            name=key_data['name'],
-            is_active=not key_data['is_deleted']
+            id=key_data["user_id"],
+            name=key_data["name"],
+            is_active=not key_data["is_deleted"],
         )
 
     except Exception as e:
@@ -157,9 +168,7 @@ class User(BaseModel):
 
     def ensure_active_api_key(self) -> Optional[APIKey]:
         """Ensure user has at least one active API key."""
-        active_keys = [
-            key for key in self.api_keys.values() if key.is_active
-        ]
+        active_keys = [key for key in self.api_keys.values() if key.is_active]
         if not active_keys:
             return None
         return active_keys[0]
@@ -176,39 +185,25 @@ class AgentConfig(BaseModel):
     description: str = Field(
         default="", description="Description of the agent's purpose"
     )
-    system_prompt: str = Field(
-        ..., description="System prompt for the agent"
-    )
-    model_name: str = Field(
-        default="gpt-4", description="Model name to use"
-    )
+    system_prompt: str = Field(..., description="System prompt for the agent")
+    model_name: str = Field(default="gpt-4", description="Model name to use")
     temperature: float = Field(
         default=0.1,
         ge=0.0,
         le=2.0,
         description="Temperature for the model",
     )
-    max_loops: int = Field(
-        default=1, ge=1, description="Maximum number of loops"
-    )
+    max_loops: int = Field(default=1, ge=1, description="Maximum number of loops")
     dynamic_temperature_enabled: bool = Field(
         default=True, description="Enable dynamic temperature"
     )
-    user_name: str = Field(
-        default="default_user", description="Username for the agent"
-    )
-    retry_attempts: int = Field(
-        default=1, ge=1, description="Number of retry attempts"
-    )
-    context_length: int = Field(
-        default=200000, ge=1000, description="Context length"
-    )
+    user_name: str = Field(default="default_user", description="Username for the agent")
+    retry_attempts: int = Field(default=1, ge=1, description="Number of retry attempts")
+    context_length: int = Field(default=200000, ge=1000, description="Context length")
     output_type: str = Field(
         default="string", description="Output type (string or json)"
     )
-    streaming_on: bool = Field(
-        default=False, description="Enable streaming"
-    )
+    streaming_on: bool = Field(default=False, description="Enable streaming")
     tags: List[str] = Field(
         default_factory=list,
         description="Tags for categorizing the agent",
@@ -265,13 +260,9 @@ class CompletionRequest(BaseModel):
 
     prompt: str = Field(..., description="The prompt to process")
     agent_id: UUID = Field(..., description="ID of the agent to use")
-    max_tokens: Optional[int] = Field(
-        None, description="Maximum tokens to generate"
-    )
+    max_tokens: Optional[int] = Field(None, description="Maximum tokens to generate")
     temperature_override: Optional[float] = 0.5
-    stream: bool = Field(
-        default=False, description="Enable streaming response"
-    )
+    stream: bool = Field(default=False, description="Enable streaming response")
 
 
 class CompletionResponse(BaseModel):
@@ -300,9 +291,7 @@ class AgentStore:
         Path("logs").mkdir(exist_ok=True)
         Path("states").mkdir(exist_ok=True)
 
-    async def verify_agent_access(
-        self, agent_id: UUID, user_id: UUID
-    ) -> bool:
+    async def verify_agent_access(self, agent_id: UUID, user_id: UUID) -> bool:
         """Verify if a user has access to an agent."""
         if agent_id not in self.agents:
             return False
@@ -311,9 +300,7 @@ class AgentStore:
             or self.users[user_id].is_admin
         )
 
-    async def create_agent(
-        self, config: AgentConfig, user_id: UUID
-    ) -> UUID:
+    async def create_agent(self, config: AgentConfig, user_id: UUID) -> UUID:
         """Create a new agent with the given configuration."""
         try:
 
@@ -375,9 +362,7 @@ class AgentStore:
             )
         return agent
 
-    async def update_agent(
-        self, agent_id: UUID, update: AgentUpdate
-    ) -> None:
+    async def update_agent(self, agent_id: UUID, update: AgentUpdate) -> None:
         """Update agent configuration."""
         agent = await self.get_agent(agent_id)
         metadata = self.agent_metadata[agent_id]
@@ -393,9 +378,7 @@ class AgentStore:
         if update.status is not None:
             metadata["status"] = update.status
             if update.status == AgentStatus.MAINTENANCE:
-                metadata["downtime"] += (
-                    datetime.utcnow() - metadata["last_used"]
-                )
+                metadata["downtime"] += datetime.utcnow() - metadata["last_used"]
 
         logger.info(f"Updated agent {agent_id}")
 
@@ -443,9 +426,7 @@ class AgentStore:
             metadata = self.agent_metadata[agent_id]
 
             # Apply filters
-            if tags and not any(
-                tag in metadata["tags"] for tag in tags
-            ):
+            if tags and not any(tag in metadata["tags"] for tag in tags):
                 continue
             if status and metadata["status"] != status:
                 continue
@@ -473,14 +454,10 @@ class AgentStore:
         # Calculate metrics
         total_time = datetime.utcnow() - metadata["start_time"]
         uptime = total_time - metadata["downtime"]
-        uptime_percentage = (
-            uptime.total_seconds() / total_time.total_seconds()
-        ) * 100
+        uptime_percentage = (uptime.total_seconds() / total_time.total_seconds()) * 100
 
         success_rate = (
-            metadata["successful_completions"]
-            / metadata["total_completions"]
-            * 100
+            metadata["successful_completions"] / metadata["total_completions"] * 100
             if metadata["total_completions"] > 0
             else 0
         )
@@ -488,32 +465,23 @@ class AgentStore:
         return AgentMetrics(
             total_completions=metadata["total_completions"],
             average_response_time=(
-                sum(response_times) / len(response_times)
-                if response_times
-                else 0
+                sum(response_times) / len(response_times) if response_times else 0
             ),
             error_rate=(
-                metadata["error_count"]
-                / metadata["total_completions"]
+                metadata["error_count"] / metadata["total_completions"]
                 if metadata["total_completions"] > 0
                 else 0
             ),
             last_24h_completions=sum(
-                1
-                for t in response_times
-                if (datetime.utcnow() - t).days < 1
+                1 for t in response_times if (datetime.utcnow() - t).days < 1
             ),
             total_tokens_used=metadata["total_tokens"],
             uptime_percentage=uptime_percentage,
             success_rate=success_rate,
-            peak_tokens_per_minute=max(
-                metadata.get("tokens_per_minute", [0])
-            ),
+            peak_tokens_per_minute=max(metadata.get("tokens_per_minute", [0])),
         )
 
-    async def clone_agent(
-        self, agent_id: UUID, new_name: str
-    ) -> UUID:
+    async def clone_agent(self, agent_id: UUID, new_name: str) -> UUID:
         """Clone an existing agent with a new name."""
         original_agent = await self.get_agent(agent_id)
         original_metadata = self.agent_metadata[agent_id]
@@ -568,9 +536,7 @@ class AgentStore:
             response = agent.run(prompt)
 
             # Update metrics
-            processing_time = (
-                datetime.utcnow() - start_time
-            ).total_seconds()
+            processing_time = (datetime.utcnow() - start_time).total_seconds()
             metadata["response_times"].append(processing_time)
             metadata["total_completions"] += 1
             metadata["successful_completions"] += 1
@@ -582,14 +548,11 @@ class AgentStore:
             metadata["total_tokens"] += total_tokens
 
             # Update tokens per minute tracking
-            current_minute = datetime.utcnow().replace(
-                second=0, microsecond=0
-            )
+            current_minute = datetime.utcnow().replace(second=0, microsecond=0)
             if "tokens_per_minute" not in metadata:
                 metadata["tokens_per_minute"] = {}
             metadata["tokens_per_minute"][current_minute] = (
-                metadata["tokens_per_minute"].get(current_minute, 0)
-                + total_tokens
+                metadata["tokens_per_minute"].get(current_minute, 0) + total_tokens
             )
 
             return CompletionResponse(
@@ -641,9 +604,7 @@ def get_store() -> AgentStore:
 
 # Modify the get_current_user dependency
 async def get_current_user(
-    api_key: str = Header(
-        ..., description="API key for authentication"
-    ),
+    api_key: str = Header(..., description="API key for authentication"),
     store: AgentStore = Depends(get_store),
 ) -> User:
     """Validate API key and return current user."""
@@ -693,9 +654,7 @@ class SwarmsAPI:
         # Configure CORS
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=[
-                "*"
-            ],  # Configure appropriately for production
+            allow_origins=["*"],  # Configure appropriately for production
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -706,10 +665,7 @@ class SwarmsAPI:
     def _setup_routes(self):
         """Set up API routes with Supabase authentication."""
 
-        @self.app.get(
-            "/v1/users/me/agents",
-            response_model=List[AgentSummary]
-        )
+        @self.app.get("/v1/users/me/agents", response_model=List[AgentSummary])
         async def list_user_agents(
             current_user: User = Depends(get_current_user),
             tags: Optional[List[str]] = Query(None),
@@ -730,9 +686,7 @@ class SwarmsAPI:
         ):
             """Create a new agent with the specified configuration."""
             logger.info(f"User {current_user.id} creating new agent")
-            agent_id = await self.store.create_agent(
-                config, current_user.id
-            )
+            agent_id = await self.store.create_agent(config, current_user.id)
             return {"agent_id": agent_id}
 
         @self.app.get("/v1/agents", response_model=List[AgentSummary])
@@ -745,107 +699,97 @@ class SwarmsAPI:
             agents = await self.store.list_agents(tags, status)
             # Filter agents based on user access
             return [
-                agent for agent in agents
+                agent
+                for agent in agents
                 if await self.store.verify_agent_access(agent.agent_id, current_user.id)
             ]
 
-        @self.app.patch(
-            "/v1/agent/{agent_id}",
-            response_model=Dict[str, str]
-        )
+        @self.app.patch("/v1/agent/{agent_id}", response_model=Dict[str, str])
         async def update_agent(
             agent_id: UUID,
             update: AgentUpdate,
-            current_user: User = Depends(get_current_user)
+            current_user: User = Depends(get_current_user),
         ):
             """Update an existing agent's configuration."""
             if not await self.store.verify_agent_access(agent_id, current_user.id):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to update this agent"
+                    detail="Not authorized to update this agent",
                 )
-            
+
             await self.store.update_agent(agent_id, update)
             return {"status": "updated"}
 
-        @self.app.get(
-            "/v1/agent/{agent_id}/metrics",
-            response_model=AgentMetrics
-        )
+        @self.app.get("/v1/agent/{agent_id}/metrics", response_model=AgentMetrics)
         async def get_agent_metrics(
-            agent_id: UUID,
-            current_user: User = Depends(get_current_user)
+            agent_id: UUID, current_user: User = Depends(get_current_user)
         ):
             """Get performance metrics for a specific agent."""
             if not await self.store.verify_agent_access(agent_id, current_user.id):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to view this agent's metrics"
+                    detail="Not authorized to view this agent's metrics",
                 )
-                
+
             return await self.store.get_agent_metrics(agent_id)
 
-        @self.app.post(
-            "/v1/agent/{agent_id}/clone",
-            response_model=Dict[str, UUID]
-        )
+        @self.app.post("/v1/agent/{agent_id}/clone", response_model=Dict[str, UUID])
         async def clone_agent(
             agent_id: UUID,
             new_name: str,
-            current_user: User = Depends(get_current_user)
+            current_user: User = Depends(get_current_user),
         ):
             """Clone an existing agent with a new name."""
             if not await self.store.verify_agent_access(agent_id, current_user.id):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to clone this agent"
+                    detail="Not authorized to clone this agent",
                 )
-                
+
             new_id = await self.store.clone_agent(agent_id, new_name)
             # Add the cloned agent to user's agents
             if current_user.id not in self.store.user_agents:
                 self.store.user_agents[current_user.id] = []
             self.store.user_agents[current_user.id].append(new_id)
-            
+
             return {"agent_id": new_id}
 
         @self.app.delete("/v1/agent/{agent_id}")
         async def delete_agent(
-            agent_id: UUID,
-            current_user: User = Depends(get_current_user)
+            agent_id: UUID, current_user: User = Depends(get_current_user)
         ):
             """Delete an agent."""
             if not await self.store.verify_agent_access(agent_id, current_user.id):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to delete this agent"
+                    detail="Not authorized to delete this agent",
                 )
-                
+
             await self.store.delete_agent(agent_id)
             # Remove from user's agents list
             if current_user.id in self.store.user_agents:
                 self.store.user_agents[current_user.id] = [
-                    aid for aid in self.store.user_agents[current_user.id]
+                    aid
+                    for aid in self.store.user_agents[current_user.id]
                     if aid != agent_id
                 ]
             return {"status": "deleted"}
 
-        @self.app.post(
-            "/v1/agent/completions",
-            response_model=CompletionResponse
-        )
+        @self.app.post("/v1/agent/completions", response_model=CompletionResponse)
         async def create_completion(
             request: CompletionRequest,
             background_tasks: BackgroundTasks,
-            current_user: User = Depends(get_current_user)
+            current_user: User = Depends(get_current_user),
         ):
             """Process a completion request with the specified agent."""
-            if not await self.store.verify_agent_access(request.agent_id, current_user.id):
+            if not await self.store.verify_agent_access(
+                request.agent_id, current_user.id
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to use this agent"
+                    detail="Not authorized to use this agent",
                 )
-                
+
             try:
                 agent = await self.store.get_agent(request.agent_id)
 
@@ -855,14 +799,11 @@ class SwarmsAPI:
                     request.prompt,
                     request.agent_id,
                     request.max_tokens,
-                    request.temperature_override
+                    request.temperature_override,
                 )
 
                 # Schedule background cleanup
-                background_tasks.add_task(
-                    self._cleanup_old_metrics,
-                    request.agent_id
-                )
+                background_tasks.add_task(self._cleanup_old_metrics, request.agent_id)
 
                 return response
 
@@ -870,43 +811,42 @@ class SwarmsAPI:
                 logger.error(f"Error processing completion: {str(e)}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Error processing completion: {str(e)}"
+                    detail=f"Error processing completion: {str(e)}",
                 )
 
         @self.app.get("/v1/agent/{agent_id}/status")
         async def get_agent_status(
-            agent_id: UUID,
-            current_user: User = Depends(get_current_user)
+            agent_id: UUID, current_user: User = Depends(get_current_user)
         ):
             """Get the current status of an agent."""
             if not await self.store.verify_agent_access(agent_id, current_user.id):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to view this agent's status"
+                    detail="Not authorized to view this agent's status",
                 )
-                
+
             metadata = self.store.agent_metadata.get(agent_id)
             if not metadata:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Agent {agent_id} not found"
+                    detail=f"Agent {agent_id} not found",
                 )
-                
+
             return {
                 "agent_id": agent_id,
                 "status": metadata["status"],
                 "last_used": metadata["last_used"],
                 "total_completions": metadata["total_completions"],
-                "error_count": metadata["error_count"]
+                "error_count": metadata["error_count"],
             }
-            
+
         @self.app.get("/health")
         async def health_check():
             """Health check endpoint - no auth required."""
             try:
                 # Test Supabase connection
                 supabase = get_supabase()
-                supabase.table('api_keys').select('count', count='exact').execute()
+                supabase.table("api_keys").select("count", count="exact").execute()
                 return {"status": "healthy", "database": "connected"}
             except Exception as e:
                 logger.error(f"Health check failed: {str(e)}")
@@ -915,8 +855,8 @@ class SwarmsAPI:
                     content={
                         "status": "unhealthy",
                         "database": "disconnected",
-                        "error": str(e)
-                    }
+                        "error": str(e),
+                    },
                 )
 
     async def _cleanup_old_metrics(self, agent_id: UUID):
@@ -928,23 +868,18 @@ class SwarmsAPI:
             metadata["response_times"] = [
                 t
                 for t in metadata["response_times"]
-                if isinstance(t, (int, float))
-                and t > cutoff.timestamp()
+                if isinstance(t, (int, float)) and t > cutoff.timestamp()
             ]
 
             # Clean up old tokens per minute data
             if "tokens_per_minute" in metadata:
                 metadata["tokens_per_minute"] = {
-                    k: v
-                    for k, v in metadata["tokens_per_minute"].items()
-                    if k > cutoff
+                    k: v for k, v in metadata["tokens_per_minute"].items() if k > cutoff
                 }
 
 
 class APIServer:
-    def __init__(
-        self, app: FastAPI, host: str = "0.0.0.0", port: int = 8080
-    ):
+    def __init__(self, app: FastAPI, host: str = "0.0.0.0", port: int = 8080):
         self.app = app
         self.host = host
         self.port = port
@@ -970,12 +905,8 @@ class APIServer:
     async def startup(self) -> None:
         """Start the server"""
         try:
-            logger.info(
-                f"Starting API server on http://{self.host}:{self.port}"
-            )
-            print(
-                f"Starting API server on http://{self.host}:{self.port}"
-            )
+            logger.info(f"Starting API server on http://{self.host}:{self.port}")
+            print(f"Starting API server on http://{self.host}:{self.port}")
             await self.server.serve()
         except Exception as e:
             logger.error(f"Failed to start server: {str(e)}")
