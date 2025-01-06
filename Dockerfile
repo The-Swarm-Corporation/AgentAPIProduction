@@ -55,13 +55,8 @@ USER app
 RUN mkdir -p /app/logs
 
 # Required environment variables
-ENV SUPABASE_URL="" \
-    SUPABASE_SERVICE_KEY="" \
-    ENVIRONMENT="production" \
-    LOG_LEVEL="info" \
-    WORKERS=4 \
-    MAX_REQUESTS_PER_MINUTE=60 \
-    API_KEY_LENGTH=32
+ENV OPENAI_API_KEY="" \
+    WORKSPACE_DIR="agent_workspace"
 
 # Expose port
 EXPOSE $PORT
@@ -71,4 +66,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:$PORT/health || exit 1
 
 # Start command
-CMD ["sh", "-c", "uvicorn api.api:app --host 0.0.0.0 --port $PORT --workers $WORKERS --log-level $LOG_LEVEL"]
+CMD ["sh", "-c", "uvicorn api.api:app --host 0.0.0.0 --port $PORT --log-level $LOG_LEVEL"]
