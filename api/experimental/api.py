@@ -1,13 +1,11 @@
 import asyncio
 import os
 import signal
-import time
 import traceback
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from uuid import UUID, uuid4
@@ -16,116 +14,120 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import (
     BackgroundTasks,
+    Depends,
     FastAPI,
+    Header,
     HTTPException,
     Query,
-    Request,
     status,
 )
 from fastapi.concurrency import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel, Field
+from supabase import Client, create_client
+
 from swarms.structs.agent import Agent
 
+# Load environment variables
 load_dotenv()
 
-@dataclass
-class RateLimitWindow:
-    requests: int
-    start_time: float
 
-class RateLimiter:
-    def __init__(self):
-        # Store rate limit windows per IP
-        self.ip_windows: Dict[str, Dict[str, RateLimitWindow]] = defaultdict(dict)
-        
-        # Configure different rate limits
-        self.limits = {
-            'per_second': 2,      # 2 requests per second
-            'per_minute': 30,     # 30 requests per minute
-            'per_hour': 1000,     # 1000 requests per hour
-            'per_day': 10000,     # 10000 requests per day
-        }
-        
-        # Window durations in seconds
-        self.windows = {
-            'per_second': 1,
-            'per_minute': 60,
-            'per_hour': 3600,
-            'per_day': 86400,
-        }
+class APIKey(BaseModel):
+    """Model matching Supabase api_keys table"""
 
-    def _clean_old_windows(self, ip: str):
-        """Remove expired windows for an IP"""
-        current_time = time.time()
-        for window_type in list(self.ip_windows[ip].keys()):
-            window = self.ip_windows[ip][window_type]
-            if current_time - window.start_time >= self.windows[window_type]:
-                del self.ip_windows[ip][window_type]
+    id: UUID
+    created_at: datetime
+    name: str
+    user_id: UUID
+    key: str
+    limit_credit_dollar: Optional[float] = None
+    is_deleted: bool = False
 
-    def _get_window(self, ip: str, window_type: str) -> RateLimitWindow:
-        """Get or create a rate limit window"""
-        current_time = time.time()
-        window = self.ip_windows[ip].get(window_type)
-        
-        # If window doesn't exist or is expired, create new one
-        if not window or (current_time - window.start_time >= self.windows[window_type]):
-            window = RateLimitWindow(requests=0, start_time=current_time)
-            self.ip_windows[ip][window_type] = window
-            
-        return window
 
-    async def check_rate_limit(self, request: Request) -> None:
-        """Check if request exceeds rate limits"""
-        # Skip rate limiting for health check endpoint
-        if request.url.path == "/health":
-            return
+class User(BaseModel):
+    id: UUID
+    name: str
+    is_active: bool = True
+    is_admin: bool = False
 
-        ip = request.client.host
-        self._clean_old_windows(ip)
 
-        # Check each window type
-        for window_type, limit in self.limits.items():
-            window = self._get_window(ip, window_type)
-            
-            if window.requests >= limit:
-                retry_after = self.windows[window_type] - (time.time() - window.start_time)
-                raise HTTPException(
-                    status_code=429,
-                    detail={
-                        "error": "Rate limit exceeded",
-                        "window": window_type,
-                        "limit": limit,
-                        "retry_after": int(retry_after)
-                    },
-                    headers={
-                        "Retry-After": str(int(retry_after)),
-                        "X-RateLimit-Limit": str(limit),
-                        "X-RateLimit-Remaining": "0",
-                        "X-RateLimit-Reset": str(int(window.start_time + self.windows[window_type]))
-                    }
-                )
+@lru_cache()
+def get_supabase() -> Client:
+    """Get cached Supabase client"""
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not supabase_url or not supabase_key:
+        raise ValueError("Supabase configuration is missing")
+    return create_client(supabase_url, supabase_key)
 
-            window.requests += 1
 
-    def get_rate_limit_status(self, ip: str) -> Dict[str, Dict[str, int]]:
-        """Get current rate limit status for an IP"""
-        self._clean_old_windows(ip)
-        status = {}
-        
-        for window_type, limit in self.limits.items():
-            window = self._get_window(ip, window_type)
-            remaining = max(0, limit - window.requests)
-            reset_time = int(window.start_time + self.windows[window_type])
-            
-            status[window_type] = {
-                "limit": limit,
-                "remaining": remaining,
-                "reset": reset_time
-            }
-            
-        return status
+async def get_current_user(
+    api_key: str = Header(..., description="API key for authentication"),
+) -> User:
+    """Validate API key against Supabase and return current user."""
+    if not api_key or not api_key.startswith("sk-"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key format",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+    try:
+        supabase = get_supabase()
+
+        # Query the api_keys table
+        response = (
+            supabase.table("api_keys")
+            .select("id, name, user_id, key, limit_credit_dollar, is_deleted")
+            .eq("key", api_key)
+            .single()
+            .execute()
+        )
+
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key",
+                headers={"WWW-Authenticate": "ApiKey"},
+            )
+
+        key_data = response.data
+
+        # Check if key is deleted
+        if key_data["is_deleted"]:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="API key has been deleted",
+                headers={"WWW-Authenticate": "ApiKey"},
+            )
+
+        # Check credit limit if applicable
+        if (
+            key_data["limit_credit_dollar"] is not None
+            and key_data["limit_credit_dollar"] <= 0
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="API key credit limit exceeded",
+            )
+
+        # Create user object
+        return User(
+            id=key_data["user_id"],
+            name=key_data["name"],
+            is_active=not key_data["is_deleted"],
+        )
+
+    except Exception as e:
+        logger.error(f"Error validating API key: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key validation failed",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
 
 class UvicornServer(uvicorn.Server):
     """Customized uvicorn server with graceful shutdown support"""
@@ -139,33 +141,85 @@ class UvicornServer(uvicorn.Server):
         logger.info("Shutting down server...")
         await super().shutdown(sockets)
 
+
 class AgentStatus(str, Enum):
     """Enum for agent status."""
+
     IDLE = "idle"
     PROCESSING = "processing"
     ERROR = "error"
     MAINTENANCE = "maintenance"
 
+
+# Security configurations
+API_KEY_LENGTH = 32  # Length of generated API keys
+
+
+class APIKeyCreate(BaseModel):
+    name: str  # A friendly name for the API key
+
+
+class User(BaseModel):
+    id: UUID
+    username: str
+    is_active: bool = True
+    is_admin: bool = False
+    api_keys: Dict[str, APIKey] = Field(default_factory=dict)
+
+    def ensure_active_api_key(self) -> Optional[APIKey]:
+        """Ensure user has at least one active API key."""
+        active_keys = [key for key in self.api_keys.values() if key.is_active]
+        if not active_keys:
+            return None
+        return active_keys[0]
+
+
 class AgentConfig(BaseModel):
     """Configuration model for creating a new agent."""
+
     agent_name: str = Field(..., description="Name of the agent")
-    model_name: str = Field(..., description="Name of the llm you want to use provided by litellm")
-    description: str = Field(default="", description="Description of the agent's purpose")
+    model_name: str = Field(
+        ...,
+        description="Name of the llm you want to use provided by litellm",
+    )
+    description: str = Field(
+        default="", description="Description of the agent's purpose"
+    )
     system_prompt: str = Field(..., description="System prompt for the agent")
-    temperature: float = Field(default=0.1, ge=0.0, le=2.0, description="Temperature for the model")
+    model_name: str = Field(default="gpt-4", description="Model name to use")
+    temperature: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=2.0,
+        description="Temperature for the model",
+    )
     max_loops: int = Field(default=1, ge=1, description="Maximum number of loops")
-    dynamic_temperature_enabled: bool = Field(default=True, description="Enable dynamic temperature")
+    dynamic_temperature_enabled: bool = Field(
+        default=True, description="Enable dynamic temperature"
+    )
     user_name: str = Field(default="default_user", description="Username for the agent")
     retry_attempts: int = Field(default=1, ge=1, description="Number of retry attempts")
     context_length: int = Field(default=200000, ge=1000, description="Context length")
-    output_type: str = Field(default="string", description="Output type (string or json)")
+    output_type: str = Field(
+        default="string", description="Output type (string or json)"
+    )
     streaming_on: bool = Field(default=False, description="Enable streaming")
-    tags: List[str] = Field(default_factory=list, description="Tags for categorizing the agent")
-    stopping_token: str = Field(default="<DONE>", description="Stopping token for the agent")
-    auto_generate_prompt: bool = Field(default=False, description="Auto-generate prompt based on agent details")
+    tags: List[str] = Field(
+        default_factory=list,
+        description="Tags for categorizing the agent",
+    )
+    stopping_token: str = Field(
+        default="<DONE>", description="Stopping token for the agent"
+    )
+    auto_generate_prompt: bool = Field(
+        default=False,
+        description="Auto-generate prompt based on agent details such as name, description, etc.",
+    )
+
 
 class AgentUpdate(BaseModel):
     """Model for updating agent configuration."""
+
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     temperature: Optional[float] = 0.5
@@ -173,8 +227,10 @@ class AgentUpdate(BaseModel):
     tags: Optional[List[str]] = None
     status: Optional[AgentStatus] = None
 
+
 class AgentSummary(BaseModel):
     """Summary model for agent listing."""
+
     agent_id: UUID
     agent_name: str
     description: str
@@ -185,8 +241,10 @@ class AgentSummary(BaseModel):
     tags: List[str]
     status: AgentStatus
 
+
 class AgentMetrics(BaseModel):
     """Model for agent performance metrics."""
+
     total_completions: int
     average_response_time: float
     error_rate: float
@@ -196,16 +254,20 @@ class AgentMetrics(BaseModel):
     success_rate: float
     peak_tokens_per_minute: int
 
+
 class CompletionRequest(BaseModel):
     """Model for completion requests."""
+
     prompt: str = Field(..., description="The prompt to process")
     agent_id: UUID = Field(..., description="ID of the agent to use")
     max_tokens: Optional[int] = Field(None, description="Maximum tokens to generate")
     temperature_override: Optional[float] = 0.5
     stream: bool = Field(default=False, description="Enable streaming response")
 
+
 class CompletionResponse(BaseModel):
     """Model for completion responses."""
+
     agent_id: UUID
     response: str
     metadata: Dict[str, Any]
@@ -213,11 +275,14 @@ class CompletionResponse(BaseModel):
     processing_time: float
     token_usage: Dict[str, int]
 
+
 class AgentStore:
-    """Store for managing agents."""
+    """Enhanced store for managing agents."""
+
     def __init__(self):
         self.agents: Dict[UUID, Agent] = {}
         self.agent_metadata: Dict[UUID, Dict[str, Any]] = {}
+        self.user_agents: Dict[UUID, List[UUID]] = {}  # user_id -> [agent_ids]
         self.executor = ThreadPoolExecutor(max_workers=4)
         self._ensure_directories()
 
@@ -226,9 +291,19 @@ class AgentStore:
         Path("logs").mkdir(exist_ok=True)
         Path("states").mkdir(exist_ok=True)
 
-    async def create_agent(self, config: AgentConfig) -> UUID:
+    async def verify_agent_access(self, agent_id: UUID, user_id: UUID) -> bool:
+        """Verify if a user has access to an agent."""
+        if agent_id not in self.agents:
+            return False
+        return (
+            self.agent_metadata[agent_id]["owner_id"] == user_id
+            or self.users[user_id].is_admin
+        )
+
+    async def create_agent(self, config: AgentConfig, user_id: UUID) -> UUID:
         """Create a new agent with the given configuration."""
         try:
+
             agent = Agent(
                 agent_name=config.agent_name,
                 system_prompt=config.system_prompt,
@@ -261,6 +336,11 @@ class AgentStore:
                 "downtime": timedelta(),
                 "successful_completions": 0,
             }
+
+            # Add to user's agents list
+            if user_id not in self.user_agents:
+                self.user_agents[user_id] = []
+            self.user_agents[user_id].append(agent_id)
 
             return agent_id
 
@@ -302,6 +382,39 @@ class AgentStore:
 
         logger.info(f"Updated agent {agent_id}")
 
+    def ensure_user_api_key(self, user_id: UUID) -> APIKey:
+        """Ensure user has at least one active API key."""
+        if user_id not in self.users:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+
+        user = self.users[user_id]
+        existing_key = user.ensure_active_api_key()
+        if existing_key:
+            return existing_key
+
+        # Create new API key if none exists
+        return self.create_api_key(user_id, "Default Key")
+
+    def validate_api_key(self, api_key: str) -> Optional[UUID]:
+        """Validate an API key and return the associated user ID."""
+        if not api_key:
+            return None
+
+        user_id = self.api_keys.get(api_key)
+        if not user_id or api_key not in self.users[user_id].api_keys:
+            return None
+
+        key_object = self.users[user_id].api_keys[api_key]
+        if not key_object.is_active:
+            return None
+
+        # Update last used timestamp
+        key_object.last_used = datetime.utcnow()
+        return user_id
+
     async def list_agents(
         self,
         tags: Optional[List[str]] = None,
@@ -312,6 +425,7 @@ class AgentStore:
         for agent_id, agent in self.agents.items():
             metadata = self.agent_metadata[agent_id]
 
+            # Apply filters
             if tags and not any(tag in metadata["tags"] for tag in tags):
                 continue
             if status and metadata["status"] != status:
@@ -337,6 +451,7 @@ class AgentStore:
         metadata = self.agent_metadata[agent_id]
         response_times = metadata["response_times"]
 
+        # Calculate metrics
         total_time = datetime.utcnow() - metadata["start_time"]
         uptime = total_time - metadata["downtime"]
         uptime_percentage = (uptime.total_seconds() / total_time.total_seconds()) * 100
@@ -391,6 +506,7 @@ class AgentStore:
                 detail=f"Agent {agent_id} not found",
             )
 
+        # Clean up any resources
         agent = self.agents[agent_id]
         if agent.autosave and os.path.exists(agent.saved_state_path):
             os.remove(agent.saved_state_path)
@@ -405,28 +521,33 @@ class AgentStore:
         prompt: str,
         agent_id: UUID,
         max_tokens: Optional[int] = None,
-        temperature_override: Optional[float] = 0.5,
+        temperature_override: Optional[float] = None,
     ) -> CompletionResponse:
         """Process a completion request using the specified agent."""
         start_time = datetime.utcnow()
         metadata = self.agent_metadata[agent_id]
 
         try:
+            # Update agent status
             metadata["status"] = AgentStatus.PROCESSING
             metadata["last_used"] = start_time
 
+            # Process the completion
             response = agent.run(prompt)
 
+            # Update metrics
             processing_time = (datetime.utcnow() - start_time).total_seconds()
             metadata["response_times"].append(processing_time)
             metadata["total_completions"] += 1
             metadata["successful_completions"] += 1
 
+            # Estimate token usage (this is a rough estimate)
             prompt_tokens = len(prompt.split()) * 1.3
             completion_tokens = len(response.split()) * 1.3
             total_tokens = int(prompt_tokens + completion_tokens)
             metadata["total_tokens"] += total_tokens
 
+            # Update tokens per minute tracking
             current_minute = datetime.utcnow().replace(second=0, microsecond=0)
             if "tokens_per_minute" not in metadata:
                 metadata["tokens_per_minute"] = {}
@@ -439,6 +560,8 @@ class AgentStore:
                 response=response,
                 metadata={
                     "agent_name": agent.agent_name,
+                    # "model_name": agent.llm.model_name,
+                    # "temperature": 0.5,
                 },
                 timestamp=datetime.utcnow(),
                 processing_time=processing_time,
@@ -462,116 +585,215 @@ class AgentStore:
         finally:
             metadata["status"] = AgentStatus.IDLE
 
+
 class StoreManager:
     _instance = None
 
     @classmethod
-    def get_instance(cls) -> AgentStore:
+    def get_instance(cls) -> "AgentStore":
         if cls._instance is None:
             cls._instance = AgentStore()
         return cls._instance
 
+
+# Modify the dependency function
 def get_store() -> AgentStore:
     """Dependency to get the AgentStore instance."""
     return StoreManager.get_instance()
 
+
+# Modify the get_current_user dependency
+async def get_current_user(
+    api_key: str = Header(..., description="API key for authentication"),
+    store: AgentStore = Depends(get_store),
+) -> User:
+    """Validate API key and return current user."""
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key is required",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+    user_id = store.validate_api_key(api_key)
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+    user = store.users.get(user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if not user.ensure_active_api_key():
+        # Attempt to create new API key
+        store.ensure_user_api_key(user_id)
+
+    return user
+
+
 class SwarmsAPI:
+    """Enhanced API class for Swarms agent integration."""
+
     def __init__(self):
         self.app = FastAPI(
             title="Swarms Agent API",
-            description="Free API for Swarms agent interaction",
+            description="Production-grade API for Swarms agent interaction",
             version="1.0.0",
             docs_url="/v1/docs",
             redoc_url="/v1/redoc",
         )
+        # Initialize the store using the singleton manager
         self.store = StoreManager.get_instance()
 
+        # Configure CORS
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],
+            allow_origins=["*"],  # Configure appropriately for production
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        self.rate_limiter = RateLimiter()
 
         self._setup_routes()
 
     def _setup_routes(self):
-        """Set up API routes."""
-        
-        def _setup_middleware(self):
-            @self.app.middleware("http")
-            async def rate_limit_middleware(request: Request, call_next):
-                # Apply rate limiting
-                await self.rate_limiter.check_rate_limit(request)
-                
-                # Add rate limit headers to response
-                response = await call_next(request)
-                
-                # Add rate limit status headers
-                status = self.rate_limiter.get_rate_limit_status(request.client.host)
-                for window_type, info in status.items():
-                    response.headers[f"X-RateLimit-{window_type}-Limit"] = str(info["limit"])
-                    response.headers[f"X-RateLimit-{window_type}-Remaining"] = str(info["remaining"])
-                    response.headers[f"X-RateLimit-{window_type}-Reset"] = str(info["reset"])
-                
-                return response
-            
-        @self.app.get("/v1/rate-limit-status")
-        async def get_rate_limit_status(request: Request):
-            """Get current rate limit status"""
-            return self.rate_limiter.get_rate_limit_status(request.client.host)
+        """Set up API routes with Supabase authentication."""
+
+        @self.app.get("/v1/users/me/agents", response_model=List[AgentSummary])
+        async def list_user_agents(
+            current_user: User = Depends(get_current_user),
+            tags: Optional[List[str]] = Query(None),
+            status: Optional[AgentStatus] = None,
+        ):
+            """List all agents owned by the current user."""
+            user_agents = self.store.user_agents.get(current_user.id, [])
+            return [
+                agent
+                for agent in await self.store.list_agents(tags, status)
+                if agent.agent_id in user_agents
+            ]
+
+        @self.app.post("/v1/agent", response_model=Dict[str, UUID])
+        async def create_agent(
+            config: AgentConfig,
+            current_user: User = Depends(get_current_user),
+        ):
+            """Create a new agent with the specified configuration."""
+            logger.info(f"User {current_user.id} creating new agent")
+            agent_id = await self.store.create_agent(config, current_user.id)
+            return {"agent_id": agent_id}
 
         @self.app.get("/v1/agents", response_model=List[AgentSummary])
         async def list_agents(
+            current_user: User = Depends(get_current_user),
             tags: Optional[List[str]] = Query(None),
             status: Optional[AgentStatus] = None,
         ):
             """List all agents, optionally filtered by tags and status."""
-            return await self.store.list_agents(tags, status)
-
-        @self.app.post("/v1/agent", response_model=Dict[str, UUID])
-        async def create_agent(config: AgentConfig):
-            """Create a new agent with the specified configuration."""
-            agent_id = await self.store.create_agent(config)
-            return {"agent_id": agent_id}
+            agents = await self.store.list_agents(tags, status)
+            # Filter agents based on user access
+            return [
+                agent
+                for agent in agents
+                if await self.store.verify_agent_access(agent.agent_id, current_user.id)
+            ]
 
         @self.app.patch("/v1/agent/{agent_id}", response_model=Dict[str, str])
         async def update_agent(
             agent_id: UUID,
             update: AgentUpdate,
+            current_user: User = Depends(get_current_user),
         ):
             """Update an existing agent's configuration."""
+            if not await self.store.verify_agent_access(agent_id, current_user.id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to update this agent",
+                )
+
             await self.store.update_agent(agent_id, update)
             return {"status": "updated"}
 
         @self.app.get("/v1/agent/{agent_id}/metrics", response_model=AgentMetrics)
-        async def get_agent_metrics(agent_id: UUID):
+        async def get_agent_metrics(
+            agent_id: UUID, current_user: User = Depends(get_current_user)
+        ):
             """Get performance metrics for a specific agent."""
+            if not await self.store.verify_agent_access(agent_id, current_user.id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to view this agent's metrics",
+                )
+
             return await self.store.get_agent_metrics(agent_id)
 
         @self.app.post("/v1/agent/{agent_id}/clone", response_model=Dict[str, UUID])
-        async def clone_agent(agent_id: UUID, new_name: str):
+        async def clone_agent(
+            agent_id: UUID,
+            new_name: str,
+            current_user: User = Depends(get_current_user),
+        ):
             """Clone an existing agent with a new name."""
+            if not await self.store.verify_agent_access(agent_id, current_user.id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to clone this agent",
+                )
+
             new_id = await self.store.clone_agent(agent_id, new_name)
+            # Add the cloned agent to user's agents
+            if current_user.id not in self.store.user_agents:
+                self.store.user_agents[current_user.id] = []
+            self.store.user_agents[current_user.id].append(new_id)
+
             return {"agent_id": new_id}
 
         @self.app.delete("/v1/agent/{agent_id}")
-        async def delete_agent(agent_id: UUID):
+        async def delete_agent(
+            agent_id: UUID, current_user: User = Depends(get_current_user)
+        ):
             """Delete an agent."""
+            if not await self.store.verify_agent_access(agent_id, current_user.id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to delete this agent",
+                )
+
             await self.store.delete_agent(agent_id)
+            # Remove from user's agents list
+            if current_user.id in self.store.user_agents:
+                self.store.user_agents[current_user.id] = [
+                    aid
+                    for aid in self.store.user_agents[current_user.id]
+                    if aid != agent_id
+                ]
             return {"status": "deleted"}
 
         @self.app.post("/v1/agent/completions", response_model=CompletionResponse)
         async def create_completion(
             request: CompletionRequest,
             background_tasks: BackgroundTasks,
+            current_user: User = Depends(get_current_user),
         ):
             """Process a completion request with the specified agent."""
+            if not await self.store.verify_agent_access(
+                request.agent_id, current_user.id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to use this agent",
+                )
+
             try:
                 agent = await self.store.get_agent(request.agent_id)
 
+                # Process completion
                 response = await self.store.process_completion(
                     agent,
                     request.prompt,
@@ -580,6 +802,7 @@ class SwarmsAPI:
                     request.temperature_override,
                 )
 
+                # Schedule background cleanup
                 background_tasks.add_task(self._cleanup_old_metrics, request.agent_id)
 
                 return response
@@ -590,35 +813,18 @@ class SwarmsAPI:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Error processing completion: {str(e)}",
                 )
-                
-        @self.app.get("/v1/agent/batch/completions/status")
-        async def get_batch_completion_status(requests: List[CompletionRequest]):
-            """Get status of batch completion requests."""
-            responses = []
-            for req in requests:
-                try:
-                    agent = await self.store.get_agent(req.agent_id)
-                    response = await self.store.process_completion(
-                        agent,
-                        req.prompt,
-                        req.agent_id,
-                        req.max_tokens,
-                        req.temperature_override,
-                    )
-                    responses.append(response)
-                except Exception as e:
-                    logger.error(f"Error processing batch completion: {str(e)}")
-                    responses.append(
-                        {
-                            "error": f"Error processing completion: {str(e)}",
-                            "agent_id": req.agent_id,
-                        }
-                    )
-            return responses
 
         @self.app.get("/v1/agent/{agent_id}/status")
-        async def get_agent_status(agent_id: UUID):
+        async def get_agent_status(
+            agent_id: UUID, current_user: User = Depends(get_current_user)
+        ):
             """Get the current status of an agent."""
+            if not await self.store.verify_agent_access(agent_id, current_user.id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to view this agent's status",
+                )
+
             metadata = self.store.agent_metadata.get(agent_id)
             if not metadata:
                 raise HTTPException(
@@ -636,8 +842,22 @@ class SwarmsAPI:
 
         @self.app.get("/health")
         async def health_check():
-            """Health check endpoint."""
-            return {"status": "healthy"}
+            """Health check endpoint - no auth required."""
+            try:
+                # Test Supabase connection
+                supabase = get_supabase()
+                supabase.table("api_keys").select("count", count="exact").execute()
+                return {"status": "healthy", "database": "connected"}
+            except Exception as e:
+                logger.error(f"Health check failed: {str(e)}")
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "unhealthy",
+                        "database": "disconnected",
+                        "error": str(e),
+                    },
+                )
 
     async def _cleanup_old_metrics(self, agent_id: UUID):
         """Clean up old metrics data to prevent memory bloat."""
@@ -654,9 +874,7 @@ class SwarmsAPI:
             # Clean up old tokens per minute data
             if "tokens_per_minute" in metadata:
                 metadata["tokens_per_minute"] = {
-                    k: v
-                    for k, v in metadata["tokens_per_minute"].items()
-                    if k > cutoff
+                    k: v for k, v in metadata["tokens_per_minute"].items() if k > cutoff
                 }
 
 
