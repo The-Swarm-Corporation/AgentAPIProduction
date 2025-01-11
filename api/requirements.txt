@@ -11,3 +11,4 @@ opentelemetry-instrumentation-requests
 opentelemetry-exporter-otlp-proto-grpc
 swarms
 pandas
+cryptography
