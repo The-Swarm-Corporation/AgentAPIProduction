@@ -1,6 +1,4 @@
 import requests
-import json
-from datetime import datetime
 
 # Base URL for the API
 BASE_URL = "http://localhost:8080"
@@ -25,7 +23,7 @@ agent_config = {
     "streaming_on": False,
     "tags": ["test"],
     "stopping_token": "<DONE>",
-    "auto_generate_prompt": False
+    "auto_generate_prompt": False,
 }
 
 response = requests.post(f"{BASE_URL}/v1/agent", json=agent_config)
@@ -46,7 +44,7 @@ update_data = {
     "system_prompt": "Updated system prompt",
     "temperature": 0.7,
     "max_loops": 2,
-    "tags": ["test", "updated"]
+    "tags": ["test", "updated"],
 }
 
 response = requests.patch(f"{BASE_URL}/v1/agent/{agent_id}", json=update_data)
@@ -62,14 +60,16 @@ completion_request = {
     "agent_id": agent_id,
     "max_tokens": 100,
     "temperature_override": 0.8,
-    "stream": False
+    "stream": False,
 }
 
 response = requests.post(f"{BASE_URL}/v1/agent/completions", json=completion_request)
 print("\nCompletion Response:", response.json())
 
 # Test cloning an agent
-response = requests.post(f"{BASE_URL}/v1/agent/{agent_id}/clone", params={"new_name": "cloned_agent"})
+response = requests.post(
+    f"{BASE_URL}/v1/agent/{agent_id}/clone", params={"new_name": "cloned_agent"}
+)
 print("\nClone Agent Response:", response.json())
 
 # Test getting agent status
@@ -83,18 +83,20 @@ batch_requests = [
         "agent_id": agent_id,
         "max_tokens": 50,
         "temperature_override": 0.5,
-        "stream": False
+        "stream": False,
     },
     {
         "prompt": "Who are you?",
         "agent_id": agent_id,
         "max_tokens": 50,
         "temperature_override": 0.5,
-        "stream": False
-    }
+        "stream": False,
+    },
 ]
 
-response = requests.get(f"{BASE_URL}/v1/agent/batch/completions/status", json=batch_requests)
+response = requests.get(
+    f"{BASE_URL}/v1/agent/batch/completions/status", json=batch_requests
+)
 print("\nBatch Completion Status Response:", response.json())
 
 # Test deleting an agent
@@ -102,8 +104,7 @@ response = requests.delete(f"{BASE_URL}/v1/agent/{agent_id}")
 print("\nDelete Agent Response:", response.json())
 
 # Test listing agents with filters
-response = requests.get(f"{BASE_URL}/v1/agents", params={
-    "tags": ["test"],
-    "status": "idle"
-})
+response = requests.get(
+    f"{BASE_URL}/v1/agents", params={"tags": ["test"], "status": "idle"}
+)
 print("\nFiltered Agents List Response:", response.json())

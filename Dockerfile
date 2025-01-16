@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app \
     PORT=8080 \
-    OPENAI_API_KEY="" \
+    OPENAI_API_KEY="put your key or any keys, xai, deepseek, etc" \
     WORKSPACE_DIR="agent_workspace"
 
 # Set working directory
